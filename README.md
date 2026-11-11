@@ -8,6 +8,9 @@ facts, drop threads and repeat themselves, and naive truncation makes it worse. 
 story consistent by replacing old history with model-written recaps, validating those recaps before
 accepting them, and keeping a bounded amount of memory no matter how long the story runs.
 
+In practice, stories stayed consistent past 400,000 tokens on models limited to a 32k context
+window, without relying on tool calling, which providers support unevenly.
+
 ## How it works
 
 - **Rolling memory.** When the prompt reaches 80% of the usable context, an Editor model summarizes
