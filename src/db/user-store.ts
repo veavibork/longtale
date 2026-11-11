@@ -1,0 +1,179 @@
+import type Database from 'better-sqlite3'
+import { decryptSecret, encryptSecret } from '../lib/crypto.js'
+import { newId } from '../lib/uuid.js'
+import { nowIso } from '../lib/time.js'
+
+export interface UserRow {
+  id: string
+  createdAt: string
+  displayName: string
+}
+
+export interface UserAuthRow extends UserRow {
+  passwordVerifier: string
+}
+
+export function createUser(
+  db: Database.Database,
+  displayName: string,
+  passwordHash: string,
+): UserRow {
+  const clash = db
+    .prepare(`SELECT id FROM users WHERE lower(display_name) = lower(?)`)
+    .get(displayName)
+  if (clash) throw new DisplayNameTakenError(`display name "${displayName}" is already in use`)
+
+  const id = newId()
+  const createdAt = nowIso()
+  db.prepare(
+    `INSERT INTO users (id, created_at, display_name, password_kdf_salt, password_verifier, encrypted_settings, updated_at)
+     VALUES (?, ?, ?, '', ?, NULL, ?)`,
+  ).run(id, createdAt, displayName, passwordHash, createdAt)
+  return { id, createdAt, displayName }
+}
+
+export function listUsers(db: Database.Database): UserRow[] {
+  const rows = db
+    .prepare(`SELECT id, created_at, display_name FROM users ORDER BY created_at ASC`)
+    .all() as { id: string; created_at: string; display_name: string }[]
+  return rows.map((row) => ({
+    id: row.id,
+    createdAt: row.created_at,
+    displayName: row.display_name,
+  }))
+}
+
+export function getUserById(db: Database.Database, id: string): UserAuthRow | null {
+  const row = db
+    .prepare(`SELECT id, created_at, display_name, password_verifier FROM users WHERE id = ?`)
+    .get(id) as
+    { id: string; created_at: string; display_name: string; password_verifier: string } | undefined
+  if (!row) return null
+  return {
+    id: row.id,
+    createdAt: row.created_at,
+    displayName: row.display_name,
+    passwordVerifier: row.password_verifier,
+  }
+}
+
+export class DisplayNameTakenError extends Error {}
+
+/** Case-insensitive lookup; display names are unique regardless of case. */
+export function getUserByDisplayName(
+  db: Database.Database,
+  displayName: string,
+): UserAuthRow | null {
+  const row = db
+    .prepare(
+      `SELECT id, created_at, display_name, password_verifier FROM users WHERE lower(display_name) = lower(?)`,
+    )
+    .get(displayName.trim()) as
+    { id: string; created_at: string; display_name: string; password_verifier: string } | undefined
+  if (!row) return null
+  return {
+    id: row.id,
+    createdAt: row.created_at,
+    displayName: row.display_name,
+    passwordVerifier: row.password_verifier,
+  }
+}
+
+/** Case-insensitive uniqueness check against every other user; display_name is the login name. */
+export function updateDisplayName(db: Database.Database, id: string, displayName: string): UserRow {
+  const clash = db
+    .prepare(`SELECT id FROM users WHERE lower(display_name) = lower(?) AND id != ?`)
+    .get(displayName, id) as { id: string } | undefined
+  if (clash) throw new DisplayNameTakenError(`display name "${displayName}" is already in use`)
+
+  const updatedAt = nowIso()
+  db.prepare(`UPDATE users SET display_name = ?, updated_at = ? WHERE id = ?`).run(
+    displayName,
+    updatedAt,
+    id,
+  )
+  const row = getUserById(db, id)
+  if (!row) throw new Error(`user ${id} not found after update`)
+  return { id: row.id, createdAt: row.createdAt, displayName: row.displayName }
+}
+
+export function updatePassword(db: Database.Database, id: string, passwordHash: string): void {
+  db.prepare(`UPDATE users SET password_verifier = ?, updated_at = ? WHERE id = ?`).run(
+    passwordHash,
+    nowIso(),
+    id,
+  )
+}
+
+function maskKey(plaintext: string): string {
+  const tail = plaintext.slice(-4)
+  return `${'•'.repeat(8)}${tail}`
+}
+
+export function setFeatherlessKey(
+  db: Database.Database,
+  id: string,
+  plaintext: string | null,
+): void {
+  const encrypted = plaintext ? encryptSecret(plaintext) : null
+  db.prepare(`UPDATE users SET featherless_key_encrypted = ?, updated_at = ? WHERE id = ?`).run(
+    encrypted,
+    nowIso(),
+    id,
+  )
+}
+
+export function setHordeKey(db: Database.Database, id: string, plaintext: string | null): void {
+  const encrypted = plaintext ? encryptSecret(plaintext) : null
+  db.prepare(`UPDATE users SET horde_key_encrypted = ?, updated_at = ? WHERE id = ?`).run(
+    encrypted,
+    nowIso(),
+    id,
+  )
+}
+
+function getEncryptedKeys(
+  db: Database.Database,
+  id: string,
+): { featherless: string | null; horde: string | null } {
+  const row = db
+    .prepare(`SELECT featherless_key_encrypted, horde_key_encrypted FROM users WHERE id = ?`)
+    .get(id) as
+    { featherless_key_encrypted: string | null; horde_key_encrypted: string | null } | undefined
+  return {
+    featherless: row?.featherless_key_encrypted ?? null,
+    horde: row?.horde_key_encrypted ?? null,
+  }
+}
+
+/** Decrypt a stored secret, returning null if it can't be decrypted. */
+function safeDecrypt(payload: string | null): string | null {
+  if (!payload) return null
+  try {
+    return decryptSecret(payload)
+  } catch {
+    return null
+  }
+}
+
+export function getDecryptedFeatherlessKey(db: Database.Database, id: string): string | null {
+  return safeDecrypt(getEncryptedKeys(db, id).featherless)
+}
+
+export function getDecryptedHordeKey(db: Database.Database, id: string): string | null {
+  return safeDecrypt(getEncryptedKeys(db, id).horde)
+}
+
+/** Decrypts only far enough to mask — never returns the raw key. */
+export function getMaskedKeys(
+  db: Database.Database,
+  id: string,
+): { featherlessKeyMasked: string | null; hordeKeyMasked: string | null } {
+  const { featherless, horde } = getEncryptedKeys(db, id)
+  const f = safeDecrypt(featherless)
+  const h = safeDecrypt(horde)
+  return {
+    featherlessKeyMasked: f ? maskKey(f) : null,
+    hordeKeyMasked: h ? maskKey(h) : null,
+  }
+}
