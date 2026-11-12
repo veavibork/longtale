@@ -103,6 +103,7 @@ static file server or reverse proxy that forwards `/api` to the backend on port 
   encrypt story content at rest and has no account-recovery flow. The full list is in the
   [security model](docs/architecture.md#security-model). Do not expose it to the open internet
   as is.
+  
 
 ## License
 
