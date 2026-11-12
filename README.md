@@ -1,5 +1,7 @@
 # Longtale
 
+[![CI](https://github.com/veavibork/longtale/blob/main/.github/workflows/ci.yml/badge.svg)](https://github.com/veavibork/longtale/blob/main/.github/workflows/ci.yml)
+
 A web app for long-form collaborative storytelling that stays coherent long after the story stops
 fitting in the model's context window.
 
